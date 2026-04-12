@@ -13,6 +13,13 @@ class ItemResponse(BaseModel):
 
 # 用於更新資料
 class ItemUpdate(BaseModel):
+    id: int  # 必填，用來定位
     item_name: Optional[str] = None
     unit: Optional[str] = None
     current_quantity: Optional[float] = None
+
+# 新增資料用的 Schema
+class ItemCreate(BaseModel):
+    item_name: str
+    unit: str
+    current_quantity: float

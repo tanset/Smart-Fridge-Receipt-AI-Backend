@@ -69,3 +69,52 @@ class AIEngine:
                 "details": str(e)
             }
 
+    async def generate_menu(self, ingredients: list, user_goal: str):
+        """
+        根據資料庫食材與用戶目標，生成菜單。
+        """
+        prompt = f"""
+        Role: You are a professional nutritionist and chef. Your task is to design a meal plan based on the user's goal and available ingredients.
+
+        Available Ingredients from Database (includes current stock):
+        {json.dumps(ingredients, ensure_ascii=False)}
+
+        Assumed Pantry Staples (Always Available):
+        - Starches: Rice, Noodles, Pasta.
+        - All basic seasonings and oils.
+
+        User's Goal: {user_goal}
+
+        Constraints:
+        1. For proteins and vegetables, use ONLY items from the "Available Ingredients". 
+        2. You may use pantry staples freely.
+        3. Provide Dish Name, Ingredients, Brief Instructions, and Estimated Calories.
+        4. Use English for the response.
+        5. **Measurement Instruction**: For each ingredient used, specify the exact amount to use (e.g., "100g", "2 pieces", "0.5 bowl") based on the database's units. Ensure the suggested amount does not exceed the "current_quantity" in the database.
+
+        Output Format (JSON):
+        {{
+          "meals": [
+            {{
+              "dish_name": "string",
+              "ingredients_with_measurements": [
+                {{"item": "string", "amount": "string"}}
+              ],
+              "instructions": "string",
+              "calories": number
+            }}
+          ]
+        }}
+        """
+
+        try:
+            response = self.client.models.generate_content(
+                model=self.model_id,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json"
+                )
+            )
+            return json.loads(response.text)
+        except Exception as e:
+            return {"error": "Menu generation failed", "details": str(e)}

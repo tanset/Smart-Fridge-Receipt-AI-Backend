@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float
+from sqlalchemy import Column, Integer, String, Float, Boolean
 from app.database import Base
 
 class InventoryItem(Base):
@@ -8,3 +8,4 @@ class InventoryItem(Base):
     item_name = Column(String, index=True)
     current_quantity = Column(Float)
     unit = Column(String)
+    is_deleted = Column(Boolean, default=False)

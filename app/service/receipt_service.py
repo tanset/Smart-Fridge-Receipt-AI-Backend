@@ -1,6 +1,6 @@
-import ai_engine
+import app.service.ai_engine as ai
 from fastapi import UploadFile, HTTPException
-
+engine = ai.AIEngine()
 async def process_receipt_analysis(file: UploadFile):
     # 1. 檢查檔案格式
     if not file.content_type.startswith("image/"):
@@ -13,7 +13,7 @@ async def process_receipt_analysis(file: UploadFile):
 
         # 3. 呼叫 AI 引擎
         # 建議在 service 層處理 AI 引擎的具體呼叫
-        result = await ai_engine.parse_receipt(image_data, mime_type=current_mime)
+        result = await engine.parse_receipt(image_data, mime_type=current_mime)
 
         return {
             "filename": file.filename,
