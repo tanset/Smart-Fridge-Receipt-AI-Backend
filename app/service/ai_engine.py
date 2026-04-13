@@ -12,14 +12,10 @@ class AIEngine:
         if not api_key:
             raise ValueError("API_KEY environment variable is not set")
 
-        # 新版 SDK 使用 Client 實例化
         self.client = genai.Client(api_key=api_key)
         self.model_id = "gemini-2.5-flash"
 
     async def parse_receipt(self, image_bytes: bytes, mime_type: str):
-        """
-        解析收據圖片並回傳結構化 JSON 數據
-        """
         prompt = """
                   Analyze this receipt image and extract the food items.
                 
@@ -47,7 +43,6 @@ class AIEngine:
                 """
 
         try:
-            # 使用新版 SDK 的 generate_content 方式
             response = self.client.models.generate_content(
                 model=self.model_id,
                 contents=[
@@ -55,12 +50,10 @@ class AIEngine:
                     types.Part.from_bytes(data=image_bytes, mime_type=mime_type)
                 ],
                 config=types.GenerateContentConfig(
-                    # 強制輸出格式為 JSON，這會自動移除 Markdown 標籤 (如 ```json)
                     response_mime_type="application/json"
                 )
             )
 
-            # 由於設定了 response_mime_type，response.text 直接就是 JSON 字串
             return json.loads(response.text)
 
         except Exception as e:
@@ -70,9 +63,6 @@ class AIEngine:
             }
 
     async def generate_menu(self, ingredients: list, user_goal: str):
-        """
-        根據資料庫食材與用戶目標，生成菜單。
-        """
         prompt = f"""
         Role: You are a professional nutritionist and chef. Your task is to design a meal plan based on the user's goal and available ingredients.
 
