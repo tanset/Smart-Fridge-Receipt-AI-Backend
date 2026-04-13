@@ -1,36 +1,36 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException, Depends
-from typing import Dict, List
-from app.service.ai_engine import AIEngine
+from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, status
+from typing import List
 from sqlalchemy.orm import Session
-from pydantic import BaseModel
-from app.service import inventory_service as service
 from app import database as db
 from app import models, schemas
+from app.service import inventory_service as service
 from app.service import receipt_service
+from app.service.ai_engine import ai_engine
+from app.service import auth_service
+from fastapi.middleware.cors import CORSMiddleware
+
 app = FastAPI()
-ai_engine = AIEngine()
 
-@app.post("/analyze-receipt")
-async def analyze_receipt(file: UploadFile = File(...)):
-    try:
-        # 直接委託給 Service 處理
-        result = await receipt_service.process_receipt_analysis(file)
-        return result
-    except HTTPException as he:
-        # 重新拋出已知的 HTTP 異常
-        raise he
-    except Exception as e:
-        # 處理非預期的錯誤
-        raise HTTPException(status_code=500, detail=str(e))
+# Define allowed origins for CORS
+origins = [
+    "http://localhost:3000",    # Default React port
+    "http://127.0.0.1:3000",
+    "https://your-frontend-domain.com", # Future production domain
+]
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,       # Allow specific origins
+    allow_credentials=True,      # Allow cookies or authentication info (e.g., JWT)
+    allow_methods=["*"],         # Allow all HTTP methods (GET, POST, PUT, DELETE, etc.)
+    allow_headers=["*"],         # Allow all headers
+)
 
-
+# Initialize database tables
 models.Base.metadata.create_all(bind=db.engine)
-class ItemCreate(BaseModel):
-    item_name: str
-    unit: str
-    quantity: float  # 前端傳入本次新增的數量
 
+
+# Dependency to get the database session
 def get_db():
     database = db.SessionLocal()
     try:
@@ -39,55 +39,112 @@ def get_db():
         database.close()
 
 
-@app.post("/inventory/save")
-async def save_corrected_items(
-    items: List[schemas.ItemCreate],
-    db: Session = Depends(get_db)
+# ==========================================
+# 1. Authentication APIs
+# ==========================================
+
+@app.post("/auth/register", response_model=schemas.UserResponse)
+def register(user: schemas.UserCreate, session: Session = Depends(get_db)):
+    db_user = session.query(models.User).filter(models.User.username == user.username).first()
+    if db_user:
+        raise HTTPException(status_code=400, detail="Username already registered")
+
+    hashed_pwd = auth_service.get_password_hash(user.password)
+    new_user = models.User(username=user.username, hashed_password=hashed_pwd)
+    session.add(new_user)
+    session.commit()
+    session.refresh(new_user)
+    return new_user
+
+
+@app.post("/auth/login", response_model=schemas.Token)
+def login(user: schemas.UserCreate, session: Session = Depends(get_db)):
+    db_user = session.query(models.User).filter(models.User.username == user.username).first()
+    if not db_user or not auth_service.verify_password(user.password, db_user.hashed_password):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect username or password")
+
+    # Store user_id in the 'sub' field of the Token
+    access_token = auth_service.create_access_token(data={"sub": str(db_user.id)})
+    return {"access_token": access_token, "token_type": "bearer"}
+
+
+# ==========================================
+# 2. Business APIs (JWT Protected)
+# ==========================================
+
+@app.post("/receipts/analyses")
+async def analyze_receipt(
+        file: UploadFile = File(...),
+        current_user_id: int = Depends(auth_service.get_current_user)  # Token validation
 ):
     try:
-        # 呼叫封裝好的服務邏輯
-        return service.bulk_update_or_create_inventory(db, items)
+        # Pass current_user_id to the service if needed to track who performed the analysis
+        result = await receipt_service.process_receipt_analysis(file)
+        return result
+    except HTTPException as he:
+        raise he
     except Exception as e:
-        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/inventories")
+async def save_corrected_items(
+        items: List[schemas.ItemCreate],
+        session: Session = Depends(get_db),
+        current_user_id: int = Depends(auth_service.get_current_user)  # Token validation
+):
+    try:
+        # Pass current_user_id to ensure data is saved under the correct user
+        return service.bulk_update_or_create_inventory(session, items, current_user_id)
+    except Exception as e:
+        session.rollback()
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
-@app.get("/inventory", response_model=List[schemas.ItemResponse])
-def read_inventory(db: Session = Depends(get_db)):
-    return service.get_all_inventory(db)
+
+@app.get("/inventories", response_model=List[schemas.ItemResponse])
+def read_inventory(
+        session: Session = Depends(get_db),
+        current_user_id: int = Depends(auth_service.get_current_user)
+):
+    # Fetch inventory belonging only to the current user
+    return service.get_user_inventory(session, current_user_id)
 
 
-@app.patch("/inventory", response_model=List[schemas.ItemResponse])
+@app.patch("/inventories", response_model=List[schemas.ItemResponse])
 def update_inventory(
         updates: List[schemas.ItemUpdate],
-        db: Session = Depends(get_db)
+        session: Session = Depends(get_db),
+        current_user_id: int = Depends(auth_service.get_current_user)
 ):
-    # 呼叫新的批量更新 service
-    updated_items = service.update_inventory_batch(db, updates)
+    # Pass user_id to ensure users cannot update data belonging to others
+    return service.update_inventory_batch(session, updates, current_user_id)
 
-    # 如果傳入列表但沒有任何一筆找到，可以視情況決定是否報錯
-    # 這裡選擇直接回傳成功更新的清單（可能為空陣列）
-    return updated_items
 
-@app.delete("/inventory/bulk", status_code=200)
-def bulk_delete_items(item_ids: List[int], db: Session = Depends(get_db)):
-    deleted_count = service.bulk_soft_delete_inventory(db, item_ids)
+@app.delete("/inventories", status_code=200)
+def bulk_delete_items(
+        item_ids: List[int],
+        session: Session = Depends(get_db),
+        current_user_id: int = Depends(auth_service.get_current_user)
+):
+    # Pass user_id to ensure users can only delete their own data
+    deleted_count = service.bulk_soft_delete_inventory(session, item_ids, current_user_id)
     if deleted_count == 0:
-        return {"message": "No valid items were found to delete"}
+        return {"message": "No valid items were found to delete or permission denied"}
     return {"message": f"Successfully soft-deleted {deleted_count} items"}
 
 
-
-@app.post("/inventory/recommend-menu")
-async def recommend_menu(user_goal: str, db: Session = Depends(get_db)):
-    # 1. 重用你既有的 service 函式獲取所有食材
-    # 這裡得到的 items 是 SQLAlchemy 的 model 物件串列
-    items = service.get_all_inventory(db)
+@app.post("/inventories/recommendations")
+async def recommend_menu(
+        user_goal: str,
+        session: Session = Depends(get_db),
+        current_user_id: int = Depends(auth_service.get_current_user)
+):
+    # 1. Fetch all ingredients for the current user
+    items = service.get_user_inventory(session, current_user_id)
 
     if not items:
-        raise HTTPException(status_code=404, detail="Your fridge is empty. Cannot generate a menu.")
+        raise HTTPException(status_code=404, detail="Your fridge is empty.")
 
-    # 2. 轉換格式：只提取 AI 需要的資訊 (名稱與數量)
-    # 這樣可以減少傳送給 AI 的 Token 數量，省錢也比較快
     ingredients_list = [
         {
             "item_name": item.item_name,
@@ -97,11 +154,8 @@ async def recommend_menu(user_goal: str, db: Session = Depends(get_db)):
         for item in items if item.current_quantity > 0
     ]
 
-    # 3. 呼叫 ai_engine 裡面的 generate_menu 函式
-    # 記得要用 await，因為 AI 請求是異步的
     result = await ai_engine.generate_menu(ingredients_list, user_goal)
 
-    # 4. 檢查 AI 執行結果
     if "error" in result:
         raise HTTPException(status_code=500, detail=result["details"])
 

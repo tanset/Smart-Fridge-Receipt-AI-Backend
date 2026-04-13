@@ -118,3 +118,5 @@ class AIEngine:
             return json.loads(response.text)
         except Exception as e:
             return {"error": "Menu generation failed", "details": str(e)}
+
+ai_engine = AIEngine()
